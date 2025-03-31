@@ -490,7 +490,7 @@ static void loongson32_init(MachineState *machine)
         sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(cpudev, 2));
     }
 
-#if 1
+#if 0
     /* init SD card  */
     {
         DriveInfo *dinfo;
