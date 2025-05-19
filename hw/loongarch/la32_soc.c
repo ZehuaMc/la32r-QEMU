@@ -63,6 +63,10 @@
 
 #define APBBASE 0x1fe20000
 
+void *ls1gpa_mmci_init(MemoryRegion *sysmem,
+    hwaddr base,
+    BlockBackend *blk, qemu_irq irq);
+
 #if defined(TARGET_LOONGARCH32)
 static uint64_t cpu_la32_KPn_to_phys(void *opaque, uint64_t addr)
 {
@@ -366,7 +370,8 @@ static void loongson32_init(MachineState *machine)
     reset_info = g_malloc0(sizeof(ResetData *) * machine->smp.cpus);
     /* One node default */
     if (ns->num_nodes == 0) {
-        ns->num_nodes = 2;
+        ns->num_nodes = 3;
+        ns->nodes[2].node_mem = LA_SRAM_SIZE;
         ns->nodes[1].node_mem = LA_BIOS_SIZE;
         ns->nodes[0].node_mem = ram_size;
     }
@@ -417,13 +422,25 @@ static void loongson32_init(MachineState *machine)
 
         sprintf(name, "%s\n", "la32.bootrom");
 
-        memory_region_init_rom(rams[1], NULL, name, nm_size, &error_fatal);
+        memory_region_init_ram(rams[1], NULL, name, nm_size, &error_fatal);
         memory_region_init_alias(spi_flash, NULL, "spi_flash", rams[1], 0, nm_size);
         memory_region_add_subregion(address_space_mem, LA_BIOS_BASE, spi_flash);
     }
+    /* Node 2 - SRAM */
+    {
+        uint64_t nm_size = ns->nodes[2].node_mem;
+        char name[32];
+        MemoryRegion *sram = g_new(MemoryRegion, 1);
+
+        sprintf(name, "%s\n", "la32.sram");
+
+        memory_region_init_ram(rams[2], NULL, name, nm_size, &error_fatal);
+        memory_region_init_alias(sram, NULL, "sram", rams[2], 0, nm_size);
+        memory_region_add_subregion(address_space_mem, LA_SRAM_BASE, sram);
+    }
     /* Other nodes */
     {
-        for (i = 2; i < ns->num_nodes; i++) {
+        for (i = 3; i < ns->num_nodes; i++) {
             rams[i] = g_new(MemoryRegion, 1);
             MemoryRegion *ram1 = g_new(MemoryRegion, 1);
             hwaddr off = ((hwaddr)i << 44);
@@ -472,7 +489,7 @@ static void loongson32_init(MachineState *machine)
     }
 
     DeviceState *cpudev = DEVICE(qemu_get_cpu(0));
-    serial_mm_init(address_space_mem, 0x1fe001e0, 0,
+    serial_mm_init(address_space_mem, 0x1f000000, 0,
             qdev_get_gpio_in(cpudev, 3), 115200, serial_hd(0),
             DEVICE_NATIVE_ENDIAN);
 

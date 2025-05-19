@@ -39,7 +39,10 @@
 
 #define FW_CFG_ADDR             0x1e020000
 #define LA_BIOS_BASE            0x1c000000
-#define LA_BIOS_SIZE            (4 * 1024 * 1024)
+#define LA_BIOS_SIZE            0x400000
+
+#define LA_SRAM_BASE            0x1c400000
+#define LA_SRAM_SIZE            0x400000
 
 #define LA_FDT_BASE             0x1c400000
 #define LA_FDT_SIZE             0x100000
