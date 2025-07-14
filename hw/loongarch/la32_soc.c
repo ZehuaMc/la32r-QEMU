@@ -63,6 +63,140 @@
 
 #define APBBASE 0x1fe20000
 
+// 函数原型声明
+void TPUsystolic(int w, int h, int m, int *input_matrix, int *weight_matrix, int *out_matrix);
+uint64_t tpu_write_in(uint64_t val);
+uint64_t tpu_write_start(uint64_t val);
+uint64_t tpu_read_out(void); // 注意这里，通常无参数函数会用 (void) 明确表示
+bool tpu_check_done(void); // 结合下面的警告一起处理
+
+static int input[900];
+static int weight[540];
+static int output[540];
+static bool	finish_flag = 0;
+
+typedef struct {
+    int input; // 输入数据
+    int weight; // 权重
+    int output; // 输出数据
+} PE;
+
+void TPUsystolic(int w, int h, int m, int *input_matrix, int *weight_matrix, int *out_matrix)
+{
+
+    PE pe_array[w][m];
+
+    // 初始化PE阵列
+    for (int i = 0; i < w; i++) {
+        for (int j = 0; j < m; j++) {
+            pe_array[i][j].input = 0.0;
+            pe_array[i][j].weight = 0.0;
+            pe_array[i][j].output = 0.0;
+        }
+    }
+
+    // 脉动计算总时间步：w + h - 1
+    for (int t = 0; t < w + h + m- 2; t++) {
+        // 1. 加载输入数据到左侧边界PE（按对角线时序）
+        for (int i = 0; i < w; i++) {
+            int k = t - i;
+            if (k >= 0 && k < h) {
+                pe_array[i][0].input = input_matrix[i * h + k];
+            } else {
+                pe_array[i][0].input = 0.0;  // 无效时间步填充0
+            }
+        }
+
+        // 2. 加载权重数据到顶部边界PE（按对角线时序）
+        for (int j = 0; j < m; j++) {
+            int k = t - j;
+            if (k >= 0 && k < h) {
+                pe_array[0][j].weight = weight_matrix[k * m + j];
+            } else {
+                pe_array[0][j].weight = 0.0;  // 无效时间步填充0
+            }
+        }
+
+        // 3. PE内部计算：乘加操作
+        for (int i = 0; i < w; i++) {
+            for (int j = 0; j < m; j++) {
+                pe_array[i][j].output += pe_array[i][j].input * pe_array[i][j].weight;
+            }
+        }
+
+        // 4. 数据向右/向下传播（最后一个PE不传播）
+        for (int i = 0; i < w; i++) {
+            for (int j = m - 1; j > 0; j--) {
+                pe_array[i][j].input = pe_array[i][j-1].input;
+            }
+        }
+        for (int j = 0; j < m; j++) {
+            for (int i = w - 1; i > 0; i--) {
+                pe_array[i][j].weight = pe_array[i-1][j].weight;
+            }
+        }
+    }
+
+    // 提取结果
+    for (int i = 0; i < w; i++) {
+        for (int j = 0; j < m; j++) {
+            out_matrix[i * m + j] = pe_array[i][j].output;
+        }
+    }
+    finish_flag = true;
+}
+
+#define ROUND 9
+#define LINE 16
+
+int read_cnt = 0;
+int output_cnt = 0;
+uint64_t tpu_write_in(uint64_t val){
+    if(read_cnt < ROUND*LINE) {
+        input[read_cnt] = val;
+    }
+    else if(read_cnt < ROUND*LINE + ROUND*LINE) {
+        weight[read_cnt - ROUND*LINE] = val;
+        if(read_cnt == ROUND*LINE + ROUND*LINE - 1) {
+            //printf("TPU input and weight loaded, starting computation...\n");
+            //printf("\nQEMU TPU input:\n");
+            //for(int i=0; i<ROUND*LINE; i++) {
+            //    printf("in_x3[%d]=%d, w_x3[%d]=%d\n", i, input[i], i, weight[i]);
+            //}
+            //printf("QEMU TPU input done\n\n");
+            TPUsystolic(LINE, ROUND, LINE, input, weight, output);
+        }
+    }
+    else {
+        read_cnt = 0;
+    }
+    read_cnt++;
+    return 0;
+}
+
+uint64_t tpu_write_start(uint64_t val) {
+    read_cnt = 0;
+    output_cnt = 0;
+    finish_flag = false;
+    return 0;
+}
+
+uint64_t tpu_read_out(void) {
+    if (output_cnt < LINE*LINE) {
+        if(output_cnt == (LINE*LINE - 1)) {
+            finish_flag = false;
+        }
+        return output[output_cnt++];
+    } else {
+        output_cnt = 0;
+        return 0;
+    }
+}
+
+bool tpu_check_done(void){
+    return finish_flag;
+}
+
 void *ls1gpa_mmci_init(MemoryRegion *sysmem,
     hwaddr base,
     BlockBackend *blk, qemu_irq irq);
@@ -121,6 +255,21 @@ static void la32_qemu_writel(void *opaque, hwaddr addr,
     case 0x1fe78034:
         clkreg[(addr - 0x1fe78030) / 4] = val;
         break;
+    case 0x1f20f500:
+        assert(0);
+        break;
+    case 0x1f10f600:
+        tpu_write_start(val);
+        break;
+    case 0x1f10f604:
+        tpu_write_in(val);
+        break;
+    case 0x1f10f60C:
+        assert(0);
+        break;
+    case 0x1f10f610:
+        assert(0);
+        break;
     }
 }
 
@@ -131,7 +280,18 @@ static uint64_t la32_qemu_readl(void *opaque, hwaddr addr, unsigned size)
     case 0x1fe78030:
     case 0x1fe78034:
         return clkreg[(addr - 0x1fe78030) / 4];
+    case 0x1f20f500:
+        return 0x00000000;
+    case 0x1f10f600:
+        assert(0);
+    case 0x1f10f604:
+        assert(0);
+    case 0x1f10f60C:
+        return tpu_check_done();
+    case 0x1f10f610:
+        return tpu_read_out();
     }
+    
     return 0;
 }
 
@@ -435,6 +595,32 @@ static void loongson32_init(MachineState *machine)
         sprintf(name, "%s\n", "la32.sram");
 
         memory_region_init_ram(rams[2], NULL, name, nm_size, &error_fatal);
+        void *sram_ptr = memory_region_get_ram_ptr(rams[2]);
+        if (sram_ptr) {
+            // 打开本地文件并将内容写入sram_ptr，按实际文件大小写入
+            const char *filename = "/home/zehua/Documents/loongson-workbench/SOC-workbench/software/examples/handwrite/data.hex";
+            FILE *fp = fopen(filename, "rb");
+            if (fp) {
+                fseek(fp, 0, SEEK_END);
+                long file_size = ftell(fp);
+                rewind(fp);
+                size_t to_write = file_size > 0 ? (file_size < nm_size ? file_size : nm_size) : 0;
+                if (to_write > 0) {
+                    printf("to write: %zu bytes\n", to_write);
+                    size_t read_bytes = fread(sram_ptr, 1, to_write, fp);
+                    printf("Loaded %zu bytes from %s into SRAM.\n", read_bytes, filename);
+                } else {
+                    printf("File %s is empty or error.\n", filename);
+                }
+                fclose(fp);
+            } else {
+                fprintf(stderr, "qemu: failed to open %s for SRAM init\n", filename);
+                // 也可以选择退出或填充默认值
+            }
+        } else {
+            fprintf(stderr, "qemu: failed to get SRAM memory pointer\n");
+            exit(1);
+        }
         memory_region_init_alias(sram, NULL, "sram", rams[2], 0, nm_size);
         memory_region_add_subregion(address_space_mem, LA_SRAM_BASE, sram);
     }
@@ -541,6 +727,20 @@ static void loongson32_init(MachineState *machine)
         memory_region_init_io(iomem, NULL, &la32_qemu_ops,
                 (void *)0x1fd00420, "0x1fd00420", 0x8);
         memory_region_add_subregion(address_space_mem, 0x1fd00420, iomem);
+        
+    }
+
+    {
+        MemoryRegion *iomem = g_new(MemoryRegion, 1);
+        memory_region_init_io(iomem, NULL, &la32_qemu_ops,
+                (void *)0x1f20f500, "0x1f20f500", 0x8);
+        memory_region_add_subregion(address_space_mem, 0x1f20f500, iomem);
+    }
+    {
+        MemoryRegion *iomem = g_new(MemoryRegion, 1);
+        memory_region_init_io(iomem, NULL, &la32_qemu_ops,
+                (void *)0x1f10f600, "0x1f10f600", 0x14);
+        memory_region_add_subregion(address_space_mem, 0x1f10f600, iomem);
     }
     g_free(reset_info);
 }
