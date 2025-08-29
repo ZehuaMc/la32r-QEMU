@@ -147,7 +147,7 @@ void TPUsystolic(int w, int h, int m, int *input_matrix, int *weight_matrix, int
 }
 
 #define ROUND 9
-#define LINE 16
+#define LINE 8
 
 int read_cnt = 0;
 int output_cnt = 0;
@@ -595,6 +595,7 @@ static void loongson32_init(MachineState *machine)
         sprintf(name, "%s\n", "la32.sram");
 
         memory_region_init_ram(rams[2], NULL, name, nm_size, &error_fatal);
+        /*
         void *sram_ptr = memory_region_get_ram_ptr(rams[2]);
         if (sram_ptr) {
             // 打开本地文件并将内容写入sram_ptr，按实际文件大小写入
@@ -621,6 +622,7 @@ static void loongson32_init(MachineState *machine)
             fprintf(stderr, "qemu: failed to get SRAM memory pointer\n");
             exit(1);
         }
+        */
         memory_region_init_alias(sram, NULL, "sram", rams[2], 0, nm_size);
         memory_region_add_subregion(address_space_mem, LA_SRAM_BASE, sram);
     }
